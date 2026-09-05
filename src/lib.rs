@@ -116,6 +116,8 @@ impl Process {
         let deadline = Instant::now() + STOP_TIMEOUT;
         loop {
             if let Some(status) = self.child.try_wait()? {
+                // The launcher exiting does not mean its process group is empty.
+                self.signal("-KILL")?;
                 self.stopped = true;
                 return Ok(status);
             }

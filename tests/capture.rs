@@ -38,10 +38,10 @@ fn recipe(r: &mut Recorder) -> Result<()> {
                 r.sleep(Duration::from_secs(1))
             } else if action == "command-fail" {
                 r.exec(Command::new(env::current_exe()?).arg("--exit42"))
-            } else if action == "stubborn" {
+            } else if action == "stubborn" || action == "launcher" {
                 r.exec(
                     Command::new(env::current_exe()?)
-                        .arg("--stubborn")
+                        .arg(format!("--{}", action.to_string_lossy()))
                         .arg(std::process::id().to_string())
                         .arg(parent.join("stubborn-pid")),
                 )
@@ -96,6 +96,7 @@ fn recipe(r: &mut Recorder) -> Result<()> {
         ("command-fail", 42),
         ("app-exit", 1),
         ("stubborn", 143),
+        ("launcher", 143),
         ("cleanup-signal", 143),
     ] {
         let status = Command::new(env::current_exe()?)
@@ -111,6 +112,25 @@ fn recipe(r: &mut Recorder) -> Result<()> {
                     .status()?
                     .success()
             );
+        }
+        if action == "launcher" {
+            let pid = fs::read_to_string(work.join("stubborn-pid"))?;
+            let live = || {
+                fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .is_ok_and(|stat| !stat.rsplit_once(") ").unwrap().1.starts_with('Z'))
+            };
+            for _ in 0..100 {
+                if !live() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let leaked = live();
+            if leaked {
+                // Clean up even when running this regression against broken code.
+                Command::new("kill").args(["-KILL", &pid]).status()?;
+            }
+            assert!(!leaked, "launcher exit left its child running");
         }
         assert!(work.join("cleanup-ran").exists());
         fs::remove_file(work.join("cleanup-ran"))?;
@@ -144,6 +164,14 @@ fn recipe(r: &mut Recorder) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    if env::args_os().nth(1).is_some_and(|arg| arg == "--launcher") {
+        Command::new(env::current_exe().unwrap())
+            .arg("--stubborn")
+            .args(env::args_os().skip(2))
+            .status()
+            .unwrap();
+        return ExitCode::SUCCESS;
+    }
     if env::args_os().nth(1).is_some_and(|arg| arg == "--exit42") {
         return ExitCode::from(42);
     }

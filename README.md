@@ -76,9 +76,10 @@ Signal notification uses `signal-hook`; orchestration is synchronous.
 
 Use `Recorder::sleep`, `exec` and `output` so cancellation is checked while
 waiting. SIGINT/SIGTERM stop the recipe, finalize active MP4 capture and clean up
-owned processes. Each child gets its own process group. Shutdown allows five
-seconds before escalating to SIGKILL and reporting a timeout. Consumer cleanup
-commands also have bounded waits. Detached servers require consumer cleanup.
+owned processes. Each child gets its own process group. During shutdown, Kinestra
+allows the launched process five seconds before escalating to SIGKILL and reporting
+a timeout. After that process exits, Kinestra kills any remaining group members.
+Consumer cleanup commands also have bounded waits. Detached servers require consumer cleanup.
 
 Successful runs remove their temporary directory. Failures retain logs at the
 printed path. Normal Rust unwinding also runs cleanup; SIGKILL, aborts and machine
@@ -98,8 +99,8 @@ nix run . -- --help
 The Nix check runs the installed Rust test recipe against real Xvfb and FFmpeg:
 two sequential recordings, poster/GIF dimensions, command failure, premature
 application exit, SIGINT/SIGTERM, forced shutdown of an uncooperative child,
-MP4 finalization, consumer cleanup and display
-isolation. These checks do not require access to a live desktop.
+surviving children of an exited launcher, MP4 finalization, consumer cleanup and
+display isolation. These checks do not require access to a live desktop.
 
 ## Origin
 
