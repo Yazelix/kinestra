@@ -428,6 +428,19 @@ impl Recorder {
         }
     }
 
+    fn ffmpeg(&self) -> Command {
+        let mut command = self.command("ffmpeg");
+        command.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-abort_on",
+            "empty_output",
+        ]);
+        command
+    }
+
     pub fn record(
         &mut self,
         output: &Path,
@@ -439,13 +452,9 @@ impl Recorder {
         let (size, display) = self.display_info()?;
         let progress = self.work.join("progress");
         fs::File::create(&progress)?;
-        let mut command = self.command("ffmpeg");
+        let mut command = self.ffmpeg();
         command
             .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
                 "-f",
                 "x11grab",
                 "-draw_mouse",
@@ -516,13 +525,9 @@ impl Recorder {
 
     pub fn snapshot(&mut self, output: &Path) -> Result<()> {
         let (size, display) = self.display_info()?;
-        let mut command = self.command("ffmpeg");
+        let mut command = self.ffmpeg();
         command
             .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
                 "-f",
                 "x11grab",
                 "-draw_mouse",
@@ -541,15 +546,8 @@ impl Recorder {
 
     pub fn poster(&mut self, input: &Path, offset: Duration, output: &Path) -> Result<()> {
         self.exec(
-            Command::new("ffmpeg")
-                .args([
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-nostdin",
-                    "-ss",
-                    &offset.as_secs_f64().to_string(),
-                ])
+            self.ffmpeg()
+                .args(["-ss", &offset.as_secs_f64().to_string()])
                 .arg("-i")
                 .arg(input)
                 .args(["-frames:v", "1", "-y"])
@@ -563,7 +561,7 @@ impl Recorder {
                 "GIF width must be positive; FPS must be 1..=100".into(),
             ));
         }
-        self.exec(Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
+        self.exec(self.ffmpeg().arg("-i")
             .arg(input).arg("-filter_complex")
             .arg(format!("fps={fps},scale={width}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse=dither=bayer"))
             .args(["-loop", "0", "-y"]).arg(output))

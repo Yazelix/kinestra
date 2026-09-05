@@ -89,6 +89,17 @@ fn recipe(r: &mut Recorder) -> Result<()> {
         "160,90"
     );
     assert!(fs::metadata(work.join("poster.png"))?.len() > 0);
+    // Seeking past EOF must fail, even if an old poster exists at the destination.
+    for name in ["missing.png", "poster.png"] {
+        assert!(matches!(
+            r.poster(
+                &work.join("first.mp4"),
+                Duration::from_secs(60),
+                &work.join(name),
+            ),
+            Err(Error::Failed(_, status)) if !status.success()
+        ));
+    }
     for (action, expected) in [
         ("fail", 1),
         ("interrupt", 143),

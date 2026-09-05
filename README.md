@@ -72,6 +72,8 @@ display environment; `work` exposes the private temporary directory.
 Zellij session.
 
 Capture is H.264/yuv420p at 30 FPS, without audio. GIF width and FPS are explicit.
+Capture and exports fail if FFmpeg produces no packets, including when a poster
+offset is past the end of the video.
 Paths, durations, validated dimensions and failures have Rust types.
 Signal notification uses `signal-hook`; orchestration is synchronous.
 
@@ -98,7 +100,8 @@ nix run . -- --help
 ```
 
 The Nix check runs the installed Rust test recipe against real Xvfb and FFmpeg:
-two sequential recordings, poster/GIF dimensions, command failure, premature
+two sequential recordings, poster/GIF dimensions, out-of-range poster offsets
+with absent or existing destinations, command failure, premature
 application exit, SIGINT/SIGTERM, forced shutdown of an uncooperative child,
 surviving children of an exited launcher, MP4 finalization, consumer cleanup and
 display isolation. These checks do not require access to a live desktop.
