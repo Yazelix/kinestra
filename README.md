@@ -45,7 +45,8 @@ use std::{path::Path, process::{Command, ExitCode}, time::Duration};
 fn record(r: &mut Recorder) -> Result<()> {
     r.display(Size::new(960, 540)?, None)?;
     r.launch("demo", Command::new("xterm")
-        .args(["-class", "demo", "-e", "your-app"]))?;
+        .args(["-class", "demo", "-e"])
+        .arg(std::env::var_os("APP_BIN").expect("Nix supplies APP_BIN")))?;
     r.sleep(Duration::from_secs(1))?;
     r.record(Path::new("demo.mp4"), |r| r.sleep(Duration::from_secs(8)))?;
     r.stop_app()?;
