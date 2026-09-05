@@ -47,6 +47,11 @@ fn recipe(r: &mut Recorder) -> Result<()> {
                 )
             } else if action == "app-exit" {
                 r.launch("missing-window", &mut Command::new("true"))
+            } else if action == "cleanup-signal" {
+                let mut cleanup = Command::new("kill");
+                cleanup.args(["-TERM", &std::process::id().to_string()]);
+                r.on_exit(cleanup);
+                Ok(())
             } else {
                 Err(Error::Invalid("intentional scenario failure".into()))
             }
@@ -91,6 +96,7 @@ fn recipe(r: &mut Recorder) -> Result<()> {
         ("command-fail", 42),
         ("app-exit", 1),
         ("stubborn", 143),
+        ("cleanup-signal", 143),
     ] {
         let status = Command::new(env::current_exe()?)
             .arg(action)

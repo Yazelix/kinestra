@@ -161,6 +161,7 @@ pub fn run(recipe: impl FnOnce(&mut Recorder) -> Result<()>) -> ExitCode {
         recipe(&mut recorder)?;
         recorder.check()?;
         recorder.close()?;
+        recorder.check()?;
         recorder.success = true;
         Ok(())
     })();
