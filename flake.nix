@@ -1,6 +1,5 @@
 {
-  description = "Kinestra: repeatable recordings of real terminal applications";
-
+  description = "Kinestra: typed recordings of real terminal applications";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/e9a7635a57597d9754eccebdfc7045e6c8600e6b";
 
   outputs =
@@ -8,53 +7,76 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      kinestra = pkgs.writeShellApplication {
-        name = "kinestra";
-        runtimeInputs = with pkgs; [
-          coreutils
-          ffmpeg-full
-          xorg-server
-          xdotool
-          picom
-          xwallpaper
-        ];
-        text = ''
-          if [[ $# == 0 || $1 == --help ]]; then
-            printf 'Usage: kinestra SCENARIO.sh [ARGS...]\nRuns a trusted Bash scenario with isolated X11 capture helpers.\n'
-            exit 0
-          fi
-          scenario=$(realpath "$1")
-          shift
-          export KINESTRA_ACTIVE=1
-          # shellcheck disable=SC1091
-          source ${./capture.sh}
-          trap kinestra_cleanup EXIT
-          trap 'exit 130' INT
-          trap 'exit 143' TERM
-          # shellcheck disable=SC1090
-          source "$scenario" "$@"
-        '';
+      captureTools = with pkgs; [
+        coreutils
+        ffmpeg-full
+        xorg-server
+        xdotool
+        picom
+        xwallpaper
+      ];
+      # Compile a consumer's ordinary Rust main against this pinned library.
+      mkRecorder =
+        {
+          name,
+          recipe ? ./src/main.rs,
+          runtimeInputs ? [ ],
+          environment ? { },
+        }:
+        pkgs.rustPlatform.buildRustPackage {
+          pname = name;
+          version = "0.2.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./src
+            ];
+          };
+          cargoLock.lockFile = ./Cargo.lock;
+          postPatch = "cp ${recipe} src/main.rs";
+          cargoBuildFlags = [
+            "--bin"
+            "kinestra"
+          ];
+          cargoTestFlags = [ "--lib" ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postInstall = ''
+            ${pkgs.lib.optionalString (name != "kinestra") "mv $out/bin/kinestra $out/bin/${name}"}
+            wrapProgram $out/bin/${name} --prefix PATH : ${
+              pkgs.lib.makeBinPath (captureTools ++ runtimeInputs)
+            } ${
+              pkgs.lib.concatStringsSep " " (
+                pkgs.lib.mapAttrsToList (
+                  key: value: "--set ${pkgs.lib.escapeShellArg key} ${pkgs.lib.escapeShellArg (toString value)}"
+                ) environment
+              )
+            }
+          '';
+          meta = {
+            description = "Typed terminal recording orchestration";
+            license = pkgs.lib.licenses.asl20;
+            mainProgram = name;
+            platforms = [ system ];
+          };
+        };
+      kinestra = mkRecorder { name = "kinestra"; };
+      captureCheck = mkRecorder {
+        name = "kinestra-capture-check";
+        recipe = ./tests/capture.rs;
       };
     in
     {
+      lib.${system}.mkRecorder = mkRecorder;
       packages.${system}.default = kinestra;
       apps.${system}.default = {
         type = "app";
         program = "${kinestra}/bin/kinestra";
       };
-      checks.${system}.capture =
-        pkgs.runCommand "kinestra-capture-check"
-          {
-            nativeBuildInputs = [
-              kinestra
-              pkgs.shellcheck
-            ];
-          }
-          ''
-            shellcheck ${./capture.sh} ${./tests/capture.sh}
-            export CHECK_SCENARIO=${./tests/capture.sh}
-            kinestra "$CHECK_SCENARIO"
-            touch "$out"
-          '';
+      checks.${system}.capture = pkgs.runCommand "kinestra-capture-check" { } ''
+        ${pkgs.coreutils}/bin/timeout --kill-after=10s 60s ${captureCheck}/bin/kinestra-capture-check
+        touch "$out"
+      '';
     };
 }
