@@ -103,7 +103,7 @@ The Nix check runs the installed Rust test recipe against real Xvfb and FFmpeg:
 two sequential recordings, poster/GIF dimensions, out-of-range poster offsets
 with absent or existing destinations, command failure, premature
 application exit, SIGINT/SIGTERM, forced shutdown of an uncooperative child,
-surviving children of an exited launcher, MP4 finalization, consumer cleanup and
+surviving children of an exited launcher, MP4 finalization, consumer cleanup failures and
 display isolation. These checks do not require access to a live desktop.
 
 ## Origin

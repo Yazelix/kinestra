@@ -27,6 +27,11 @@ fn recipe(r: &mut Recorder) -> Result<()> {
         let mut cleanup = Command::new("touch");
         cleanup.arg(parent.join("cleanup-ran"));
         r.on_exit(cleanup);
+        if action == "cleanup-fail" || action == "cleanup-and-recipe-fail" {
+            let mut cleanup = Command::new(env::current_exe()?);
+            cleanup.arg("--exit42");
+            r.on_exit(cleanup);
+        }
         return r.record(&parent.join("interrupted.mp4"), |r| {
             if action == "interrupt" || action == "interrupt-int" {
                 let signal = if action == "interrupt" {
@@ -51,6 +56,8 @@ fn recipe(r: &mut Recorder) -> Result<()> {
                 let mut cleanup = Command::new("kill");
                 cleanup.args(["-TERM", &std::process::id().to_string()]);
                 r.on_exit(cleanup);
+                Ok(())
+            } else if action == "cleanup-fail" {
                 Ok(())
             } else {
                 Err(Error::Invalid("intentional scenario failure".into()))
@@ -109,6 +116,8 @@ fn recipe(r: &mut Recorder) -> Result<()> {
         ("stubborn", 143),
         ("launcher", 143),
         ("cleanup-signal", 143),
+        ("cleanup-fail", 42),
+        ("cleanup-and-recipe-fail", 1),
     ] {
         let status = Command::new(env::current_exe()?)
             .arg(action)
