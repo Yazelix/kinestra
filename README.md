@@ -1,7 +1,7 @@
 # Kinestra
 
 Typed Rust orchestration for recordings of real terminal applications. Kinestra
-owns the private X11 display, child processes, FFmpeg capture and exports.
+owns a private X11 or headless Wayland display, child processes, capture and exports.
 Consumers own their Rust recipes, application pins, appearance and media paths.
 
 Capture supports **x86_64 Linux** only and does not use your desktop. Recorders
@@ -10,7 +10,7 @@ the recorded application's installed runtime.
 
 ## Recording
 
-For one application, with its terminal available on PATH:
+For one X11 application, with its terminal available on PATH:
 
 ```sh
 nix run github:Yazelix/kinestra -- 960 540 8 demo.mp4 demo xterm -class demo -e your-app
@@ -62,6 +62,22 @@ its tools through Nix. The consumer needs no duplicate Cargo dependency pin,
 runtime compiler, shell interpreter for its recipe, or custom scenario language.
 Changing the recipe requires a rebuild.
 
+Native Wayland recipes use the same recorder with a private headless Sway display:
+
+```rust
+r.wayland_display(Size::new(960, 540)?)?;
+r.launch("your-app-id", Command::new("your-app"))?;
+r.record(Path::new("demo.mp4"), |r| {
+    r.type_text("hello", Duration::from_millis(40))?;
+    r.key("Return", Duration::from_secs(2))
+})?;
+r.snapshot(Path::new("poster.png"))?;
+```
+
+`launch` waits for the native app ID on Wayland or the window class on X11.
+Wayland capture uses wf-recorder, snapshots use grim, and scripted keys use
+wtype. The one-shot CLI above remains X11-only.
+
 ## Lifecycle and API
 
 `Recorder` supplies display setup, window launch/stop, recording, snapshots,
@@ -99,12 +115,15 @@ nix flake check
 nix run . -- --help
 ```
 
-The Nix check runs the installed Rust test recipe against real Xvfb and FFmpeg:
+The Nix checks run installed Rust recipes against real Xvfb/FFmpeg and headless
+Sway/wf-recorder/grim/wtype. The X11 check covers:
 two sequential recordings, poster/GIF dimensions, out-of-range poster offsets
 with absent or existing destinations, command failure, premature
 application exit, SIGINT/SIGTERM, forced shutdown of an uncooperative child,
 surviving children of an exited launcher, MP4 finalization, consumer cleanup failures and
-display isolation. These checks do not require access to a live desktop.
+display isolation. The Wayland check launches a real terminal by app ID, types
+into it, and verifies the recorded video and image dimensions. Neither check
+requires access to a live desktop.
 
 ## Origin
 

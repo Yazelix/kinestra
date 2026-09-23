@@ -8,6 +8,7 @@ use std::{
     fmt, fs, io,
     os::unix::{
         ffi::OsStringExt,
+        fs::{DirBuilderExt, FileTypeExt},
         process::{CommandExt, ExitStatusExt},
     },
     path::{Path, PathBuf},
@@ -141,12 +142,40 @@ impl Drop for Process {
     }
 }
 
+#[derive(Clone)]
+enum Display {
+    X11 {
+        size: Size,
+        name: String,
+    },
+    Wayland {
+        runtime: PathBuf,
+        name: OsString,
+        ipc: PathBuf,
+    },
+}
+
+fn wayland_app_node(node: &serde_json::Value, app_id: &str) -> Option<u64> {
+    if node.get("app_id").and_then(serde_json::Value::as_str) == Some(app_id) {
+        return node.get("id").and_then(serde_json::Value::as_u64);
+    }
+    ["nodes", "floating_nodes"].into_iter().find_map(|field| {
+        node.get(field)
+            .and_then(serde_json::Value::as_array)
+            .and_then(|children| {
+                children
+                    .iter()
+                    .find_map(|child| wayland_app_node(child, app_id))
+            })
+    })
+}
+
 /// Owns the private display and every capture child. Use `run` to retain logs on error.
 pub struct Recorder {
     work: PathBuf,
     interrupted: Arc<AtomicUsize>,
     signals: Vec<SigId>,
-    display: Option<(Size, String)>,
+    display: Option<Display>,
     xvfb: Option<Process>,
     compositor: Option<Process>,
     app: Option<Process>,
@@ -262,20 +291,33 @@ impl Recorder {
     }
 
     fn environment(&self, command: &mut Command) {
-        if let Some((_, display)) = &self.display {
-            command.env("DISPLAY", display);
+        match &self.display {
+            Some(Display::X11 { name, .. }) => {
+                command
+                    .env("DISPLAY", name)
+                    .env("WINIT_UNIX_BACKEND", "x11");
+                for name in ["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"] {
+                    command.env_remove(name);
+                }
+            }
+            Some(Display::Wayland {
+                runtime, name, ipc, ..
+            }) => {
+                command
+                    .env("XDG_RUNTIME_DIR", runtime)
+                    .env("WAYLAND_DISPLAY", name)
+                    .env("SWAYSOCK", ipc)
+                    .env("WINIT_UNIX_BACKEND", "wayland")
+                    .env("XDG_SESSION_TYPE", "wayland")
+                    .env("XDG_CURRENT_DESKTOP", "sway")
+                    .env_remove("DBUS_SESSION_BUS_ADDRESS")
+                    .env_remove("DISPLAY");
+            }
+            None => {
+                command.env_remove("WAYLAND_DISPLAY").env_remove("DISPLAY");
+            }
         }
-        command
-            .env("WINIT_UNIX_BACKEND", "x11")
-            .env("TERM", "xterm-256color");
-        for name in [
-            "WAYLAND_DISPLAY",
-            "XDG_SESSION_TYPE",
-            "XDG_CURRENT_DESKTOP",
-            "NO_COLOR",
-        ] {
-            command.env_remove(name);
-        }
+        command.env("TERM", "xterm-256color").env_remove("NO_COLOR");
     }
 
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
@@ -351,7 +393,10 @@ impl Recorder {
                     .trim()
                     .parse()
                     .map_err(|_| Error::Invalid("invalid Xvfb display number".into()))?;
-                self.display = Some((size, format!(":{number}")));
+                self.display = Some(Display::X11 {
+                    size,
+                    name: format!(":{number}"),
+                });
                 break;
             }
             if Instant::now() >= deadline {
@@ -372,10 +417,78 @@ impl Recorder {
         Ok(())
     }
 
-    fn display_info(&self) -> Result<(Size, &str)> {
+    /// Starts a private headless Sway compositor for native Wayland applications.
+    pub fn wayland_display(&mut self, size: Size) -> Result<()> {
+        if self.display.is_some() || self.xvfb.is_some() || self.compositor.is_some() {
+            return Err(Error::Invalid("display already started".into()));
+        }
+        let runtime = self.work.join("runtime");
+        fs::DirBuilder::new().mode(0o700).create(&runtime)?;
+        let config = self.work.join("sway.conf");
+        fs::write(
+            &config,
+            format!(
+                "output * resolution {size}\noutput * bg #141821 solid_color\ndefault_border none\ndefault_floating_border none\nbar mode invisible\nxwayland disable\n"
+            ),
+        )?;
+        let log = fs::File::create(self.work.join("sway.log"))?;
+        let mut command = Command::new("sway");
+        command
+            .arg("-c")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("WLR_BACKENDS", "headless")
+            .env("WLR_RENDERER", "pixman")
+            .env("WLR_LIBINPUT_NO_DEVICES", "1")
+            .env("XDG_CURRENT_DESKTOP", "sway")
+            .env("XDG_SESSION_TYPE", "wayland")
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .env_remove("SWAYSOCK")
+            .stdout(log.try_clone()?)
+            .stderr(log);
+        self.compositor = Some(Process::spawn(&mut command, "-TERM")?);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            self.check()?;
+            let mut name = None;
+            let mut ipc = None;
+            for entry in fs::read_dir(&runtime)? {
+                let entry = entry?;
+                let file = entry.file_name();
+                if !entry.file_type()?.is_socket() {
+                    continue;
+                }
+                if file.as_encoded_bytes().starts_with(b"wayland-") {
+                    name = Some(file);
+                } else if file.as_encoded_bytes().starts_with(b"sway-ipc.") {
+                    ipc = Some(entry.path());
+                }
+            }
+            if let (Some(name), Some(ipc)) = (name, ipc) {
+                let ready = Command::new("swaymsg")
+                    .args(["-s"])
+                    .arg(&ipc)
+                    .args(["-t", "get_outputs"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()?;
+                if ready.success() {
+                    self.display = Some(Display::Wayland { runtime, name, ipc });
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout("starting headless Wayland display".into()));
+            }
+            self.sleep(POLL)?;
+        }
+    }
+
+    fn display_info(&self) -> Result<Display> {
         self.display
-            .as_ref()
-            .map(|(size, display)| (*size, display.as_str()))
+            .clone()
             .ok_or_else(|| Error::Invalid("start a display before capturing or launching".into()))
     }
 
@@ -386,8 +499,9 @@ impl Recorder {
         Ok(())
     }
 
+    /// Waits for an X11 window class or native Wayland app ID.
     pub fn launch(&mut self, class: &str, command: &mut Command) -> Result<()> {
-        let (size, _) = self.display_info()?;
+        let display = self.display_info()?;
         self.stop_app()?;
         self.environment(command);
         let log = fs::File::create(self.work.join("app.log"))?;
@@ -396,33 +510,49 @@ impl Recorder {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             self.check()?;
-            match self.output(
-                Command::new("xdotool")
-                    .args(["search", "--class", class])
-                    .stderr(Stdio::null()),
-            ) {
-                Ok(windows) => {
-                    if let Some(window) = windows.lines().next() {
-                        return self.exec(Command::new("xdotool").args([
-                            "windowmove",
-                            window,
-                            "0",
-                            "0",
-                            "windowsize",
-                            window,
-                            &size.width.to_string(),
-                            &size.height.to_string(),
-                            "windowfocus",
-                            "--sync",
-                            window,
-                        ]));
+            match &display {
+                Display::X11 { size, .. } => {
+                    match self.output(
+                        Command::new("xdotool")
+                            .args(["search", "--class", class])
+                            .stderr(Stdio::null()),
+                    ) {
+                        Ok(windows) => {
+                            if let Some(window) = windows.lines().next() {
+                                return self.exec(Command::new("xdotool").args([
+                                    "windowmove",
+                                    window,
+                                    "0",
+                                    "0",
+                                    "windowsize",
+                                    window,
+                                    &size.width.to_string(),
+                                    &size.height.to_string(),
+                                    "windowfocus",
+                                    "--sync",
+                                    window,
+                                ]));
+                            }
+                        }
+                        Err(Error::Failed(_, _)) => (),
+                        Err(error) => return Err(error),
                     }
                 }
-                Err(Error::Failed(_, _)) => (),
-                Err(error) => return Err(error),
+                Display::Wayland { .. } => {
+                    let output = self.command("swaymsg").args(["-t", "get_tree"]).output()?;
+                    if output.status.success()
+                        && let Ok(tree) =
+                            serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                        && let Some(id) = wayland_app_node(&tree, class)
+                    {
+                        return self.exec(
+                            Command::new("swaymsg").args([&format!("[con_id={id}]"), "focus"]),
+                        );
+                    }
+                }
             }
             if Instant::now() >= deadline {
-                return Err(Error::Timeout(format!("waiting for window class {class}")));
+                return Err(Error::Timeout(format!("waiting for window {class}")));
             }
             self.sleep(Duration::from_millis(100))?;
         }
@@ -449,50 +579,80 @@ impl Recorder {
         if self.capture.is_some() {
             return Err(Error::Invalid("recording already active".into()));
         }
-        let (size, display) = self.display_info()?;
+        let display = self.display_info()?;
         let progress = self.work.join("progress");
-        fs::File::create(&progress)?;
-        let mut command = self.ffmpeg();
+        let mut command = match &display {
+            Display::X11 { size, name } => {
+                fs::File::create(&progress)?;
+                let mut command = self.ffmpeg();
+                command
+                    .args([
+                        "-f",
+                        "x11grab",
+                        "-draw_mouse",
+                        "0",
+                        "-framerate",
+                        "30",
+                        "-video_size",
+                        &size.to_string(),
+                        "-i",
+                        name,
+                        "-an",
+                        "-c:v",
+                        "libx264",
+                        "-crf",
+                        "18",
+                        "-preset",
+                        "veryfast",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                        "-stats_period",
+                        "0.1",
+                        "-progress",
+                    ])
+                    .arg(&progress)
+                    .arg("-y")
+                    .arg(output);
+                command
+            }
+            Display::Wayland { .. } => {
+                let mut command = self.command("wf-recorder");
+                command
+                    .args([
+                        "--no-damage",
+                        "-r",
+                        "30",
+                        "-c",
+                        "libx264",
+                        "-x",
+                        "yuv420p",
+                        "-p",
+                        "crf=18",
+                        "-y",
+                        "-f",
+                    ])
+                    .arg(output);
+                command
+            }
+        };
         command
-            .args([
-                "-f",
-                "x11grab",
-                "-draw_mouse",
-                "0",
-                "-framerate",
-                "30",
-                "-video_size",
-                &size.to_string(),
-                "-i",
-                display,
-                "-an",
-                "-c:v",
-                "libx264",
-                "-crf",
-                "18",
-                "-preset",
-                "veryfast",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-stats_period",
-                "0.1",
-                "-progress",
-            ])
-            .arg(&progress)
-            .arg("-y")
-            .arg(output)
             .stdout(Stdio::null())
-            .stderr(fs::File::create(self.work.join("ffmpeg.log"))?);
+            .stderr(fs::File::create(self.work.join("capture.log"))?);
         self.capture = Some(Process::spawn(&mut command, "-INT")?);
         let result = (|| {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while fs::metadata(&progress)?.len() == 0 {
-                if Instant::now() >= deadline {
-                    return Err(Error::Timeout("starting FFmpeg".into()));
+            match display {
+                Display::X11 { .. } => {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while fs::metadata(&progress)?.len() == 0 {
+                        if Instant::now() >= deadline {
+                            return Err(Error::Timeout("starting FFmpeg".into()));
+                        }
+                        self.sleep(POLL)?;
+                    }
                 }
-                self.sleep(POLL)?;
+                Display::Wayland { .. } => self.sleep(Duration::from_millis(200))?,
             }
             recipe(self)
         })();
@@ -524,23 +684,32 @@ impl Recorder {
     }
 
     pub fn snapshot(&mut self, output: &Path) -> Result<()> {
-        let (size, display) = self.display_info()?;
-        let mut command = self.ffmpeg();
-        command
-            .args([
-                "-f",
-                "x11grab",
-                "-draw_mouse",
-                "0",
-                "-video_size",
-                &size.to_string(),
-                "-i",
-                display,
-                "-frames:v",
-                "1",
-                "-y",
-            ])
-            .arg(output);
+        let mut command = match self.display_info()? {
+            Display::X11 { size, name } => {
+                let mut command = self.ffmpeg();
+                command
+                    .args([
+                        "-f",
+                        "x11grab",
+                        "-draw_mouse",
+                        "0",
+                        "-video_size",
+                        &size.to_string(),
+                        "-i",
+                        &name,
+                        "-frames:v",
+                        "1",
+                        "-y",
+                    ])
+                    .arg(output);
+                command
+            }
+            Display::Wayland { .. } => {
+                let mut command = self.command("grim");
+                command.arg(output);
+                command
+            }
+        };
         self.exec(&mut command)
     }
 
@@ -568,18 +737,67 @@ impl Recorder {
     }
 
     pub fn key(&mut self, chord: &str, pause: Duration) -> Result<()> {
-        self.exec(Command::new("xdotool").args(["key", "--clearmodifiers", chord]))?;
+        match self.display_info()? {
+            Display::X11 { .. } => {
+                self.exec(Command::new("xdotool").args(["key", "--clearmodifiers", chord]))?;
+            }
+            Display::Wayland { .. } => {
+                let parts: Vec<_> = chord.split('+').collect();
+                let (key, modifiers) = parts
+                    .split_last()
+                    .ok_or_else(|| Error::Invalid("empty key chord".into()))?;
+                let mut command = self.command("wtype");
+                command.args(["-s", "100"]);
+                let mut held = Vec::new();
+                for modifier in modifiers {
+                    let name = match modifier.to_ascii_lowercase().as_str() {
+                        "ctrl" | "control" => "ctrl",
+                        "alt" => "alt",
+                        "shift" => "shift",
+                        "super" | "meta" | "logo" | "win" => "logo",
+                        _ => {
+                            return Err(Error::Invalid(format!(
+                                "unsupported modifier: {modifier}"
+                            )));
+                        }
+                    };
+                    command.args(["-M", name]);
+                    held.push(name);
+                }
+                let key = match *key {
+                    "Enter" => "Return",
+                    "Esc" => "Escape",
+                    "Space" => "space",
+                    _ => key,
+                };
+                command.args(["-k", key]);
+                for name in held.into_iter().rev() {
+                    command.args(["-m", name]);
+                }
+                self.exec(&mut command)?;
+            }
+        }
         self.sleep(pause)
     }
 
     pub fn type_text(&mut self, text: &str, delay: Duration) -> Result<()> {
-        self.exec(Command::new("xdotool").args([
-            "type",
-            "--delay",
-            &delay.as_millis().to_string(),
-            "--",
-            text,
-        ]))
+        match self.display_info()? {
+            Display::X11 { .. } => self.exec(Command::new("xdotool").args([
+                "type",
+                "--delay",
+                &delay.as_millis().to_string(),
+                "--",
+                text,
+            ])),
+            Display::Wayland { .. } => self.exec(Command::new("wtype").args([
+                "-s",
+                "100",
+                "-d",
+                &delay.as_millis().to_string(),
+                "--",
+                text,
+            ])),
+        }
     }
 
     fn close(&mut self) -> Result<()> {

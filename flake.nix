@@ -14,6 +14,10 @@
         xdotool
         picom
         xwallpaper
+        sway-unwrapped
+        grim
+        wf-recorder
+        wtype
       ];
       # Compile a consumer's ordinary Rust main against this pinned library.
       mkRecorder =
@@ -66,6 +70,11 @@
         name = "kinestra-capture-check";
         recipe = ./tests/capture.rs;
       };
+      waylandCheck = mkRecorder {
+        name = "kinestra-wayland-check";
+        recipe = ./tests/wayland.rs;
+        runtimeInputs = [ pkgs.foot ];
+      };
     in
     {
       lib.${system}.mkRecorder = mkRecorder;
@@ -74,9 +83,15 @@
         type = "app";
         program = "${kinestra}/bin/kinestra";
       };
-      checks.${system}.capture = pkgs.runCommand "kinestra-capture-check" { } ''
-        ${pkgs.coreutils}/bin/timeout --kill-after=10s 60s ${captureCheck}/bin/kinestra-capture-check
-        touch "$out"
-      '';
+      checks.${system} = {
+        capture = pkgs.runCommand "kinestra-capture-check" { } ''
+          ${pkgs.coreutils}/bin/timeout --kill-after=10s 60s ${captureCheck}/bin/kinestra-capture-check
+          touch "$out"
+        '';
+        wayland = pkgs.runCommand "kinestra-wayland-check" { } ''
+          ${pkgs.coreutils}/bin/timeout --kill-after=10s 60s ${waylandCheck}/bin/kinestra-wayland-check
+          touch "$out"
+        '';
+      };
     };
 }
