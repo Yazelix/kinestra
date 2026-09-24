@@ -115,15 +115,11 @@ nix flake check
 nix run . -- --help
 ```
 
-The Nix checks run installed Rust recipes against real Xvfb/FFmpeg and headless
-Sway/wf-recorder/grim/wtype/wdotool. The X11 check covers:
-two sequential recordings, poster/GIF dimensions, out-of-range poster offsets
-with absent or existing destinations, command failure, premature
-application exit, SIGINT/SIGTERM, forced shutdown of an uncooperative child,
-surviving children of an exited launcher, MP4 finalization, consumer cleanup failures and
-display isolation. The Wayland check launches a real terminal by app ID, types
-into it, and verifies the recorded video and image dimensions. Neither check
-requires access to a live desktop.
+The Nix checks run installed recipes on private Xvfb and headless Sway displays.
+The X11 check covers capture, exports, failures, signals, cleanup, and display
+isolation. The Wayland check launches a terminal by app ID, verifies typed text
+and Return reach it, checks video dimensions, and checks the snapshot and poster
+are nonempty. Neither check uses your desktop.
 
 ## Origin
 
