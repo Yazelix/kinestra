@@ -178,6 +178,7 @@ pub struct Recorder {
     display: Option<Display>,
     xvfb: Option<Process>,
     compositor: Option<Process>,
+    keyboard: Option<Process>,
     app: Option<Process>,
     capture: Option<Process>,
     cleanup: Vec<Command>,
@@ -235,6 +236,7 @@ impl Recorder {
             display: None,
             xvfb: None,
             compositor: None,
+            keyboard: None,
             app: None,
             capture: None,
             cleanup: Vec::new(),
@@ -263,6 +265,7 @@ impl Recorder {
         for process in [
             &mut self.capture,
             &mut self.app,
+            &mut self.keyboard,
             &mut self.compositor,
             &mut self.xvfb,
         ]
@@ -476,7 +479,24 @@ impl Recorder {
                     .status()?;
                 if ready.success() {
                     self.display = Some(Display::Wayland { runtime, name, ipc });
-                    return Ok(());
+                    let keyboard_ready = self.work.join("keyboard-ready");
+                    let mut keyboard = self.command("wdotool");
+                    keyboard
+                        .arg("prime")
+                        .stdout(fs::File::create(&keyboard_ready)?)
+                        .stderr(fs::File::create(self.work.join("keyboard.log"))?);
+                    self.keyboard = Some(Process::spawn(&mut keyboard, "-TERM")?);
+                    let keyboard_deadline = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        self.check()?;
+                        if fs::read_to_string(&keyboard_ready)?.contains("ready") {
+                            return Ok(());
+                        }
+                        if Instant::now() >= keyboard_deadline {
+                            return Err(Error::Timeout("starting Wayland keyboard".into()));
+                        }
+                        self.sleep(POLL)?;
+                    }
                 }
             }
             if Instant::now() >= deadline {
@@ -746,34 +766,29 @@ impl Recorder {
                 let (key, modifiers) = parts
                     .split_last()
                     .ok_or_else(|| Error::Invalid("empty key chord".into()))?;
-                let mut command = self.command("wtype");
-                command.args(["-s", "100"]);
-                let mut held = Vec::new();
-                for modifier in modifiers {
-                    let name = match modifier.to_ascii_lowercase().as_str() {
-                        "ctrl" | "control" => "ctrl",
-                        "alt" => "alt",
-                        "shift" => "shift",
-                        "super" | "meta" | "logo" | "win" => "logo",
-                        _ => {
-                            return Err(Error::Invalid(format!(
-                                "unsupported modifier: {modifier}"
-                            )));
-                        }
-                    };
-                    command.args(["-M", name]);
-                    held.push(name);
-                }
+                let modifiers = modifiers
+                    .iter()
+                    .map(|modifier| match modifier.to_ascii_lowercase().as_str() {
+                        "ctrl" | "control" => Ok("Ctrl"),
+                        "alt" => Ok("Alt"),
+                        "shift" => Ok("Shift"),
+                        "super" | "meta" | "logo" | "win" => Ok("Super"),
+                        _ => Err(Error::Invalid(format!("unsupported modifier: {modifier}"))),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 let key = match *key {
                     "Enter" => "Return",
                     "Esc" => "Escape",
                     "Space" => "space",
                     _ => key,
                 };
-                command.args(["-k", key]);
-                for name in held.into_iter().rev() {
-                    command.args(["-m", name]);
-                }
+                let chain = modifiers
+                    .into_iter()
+                    .chain([key])
+                    .collect::<Vec<_>>()
+                    .join("+");
+                let mut command = self.command("wdotool");
+                command.args(["--backend", "wlr-protocols", "key", &chain]);
                 self.exec(&mut command)?;
             }
         }
@@ -826,7 +841,12 @@ impl Recorder {
                 result = result.and(Err(error));
             }
         }
-        for process in [&mut self.app, &mut self.compositor, &mut self.xvfb] {
+        for process in [
+            &mut self.app,
+            &mut self.keyboard,
+            &mut self.compositor,
+            &mut self.xvfb,
+        ] {
             if let Some(mut process) = process.take() {
                 result = result.and(process.stop().map(|_| ()));
             }

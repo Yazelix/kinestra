@@ -75,8 +75,8 @@ r.snapshot(Path::new("poster.png"))?;
 ```
 
 `launch` waits for the native app ID on Wayland or the window class on X11.
-Wayland capture uses wf-recorder, snapshots use grim, and scripted keys use
-wtype. The one-shot CLI above remains X11-only.
+Wayland capture uses wf-recorder, snapshots use grim, typed text uses wtype,
+and physical keys use wdotool. The one-shot CLI above remains X11-only.
 
 ## Lifecycle and API
 
@@ -116,7 +116,7 @@ nix run . -- --help
 ```
 
 The Nix checks run installed Rust recipes against real Xvfb/FFmpeg and headless
-Sway/wf-recorder/grim/wtype. The X11 check covers:
+Sway/wf-recorder/grim/wtype/wdotool. The X11 check covers:
 two sequential recordings, poster/GIF dimensions, out-of-range poster offsets
 with absent or existing destinations, command failure, premature
 application exit, SIGINT/SIGTERM, forced shutdown of an uncooperative child,

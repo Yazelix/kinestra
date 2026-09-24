@@ -1,12 +1,37 @@
 {
   description = "Kinestra: typed recordings of real terminal applications";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/e9a7635a57597d9754eccebdfc7045e6c8600e6b";
+  inputs.wdotool = {
+    url = "github:cushycush/wdotool/662d7079b669de164797f46fd437c0cf7854bf82";
+    flake = false;
+  };
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, wdotool }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      waylandKeys = pkgs.rustPlatform.buildRustPackage {
+        pname = "wdotool";
+        version = "0.5.3";
+        src = wdotool;
+        cargoLock.lockFile = "${wdotool}/Cargo.lock";
+        postPatch = ''
+          substituteInPlace wdotool/Cargo.toml \
+            --replace-fail 'wdotool-core = { path = "../wdotool-core", version = "0.5.3" }' \
+                           'wdotool-core = { path = "../wdotool-core", version = "0.5.3", default-features = false, features = ["wlr-protocols"] }'
+        '';
+        cargoBuildFlags = [ "-p" "wdotool" "--no-default-features" ];
+        cargoInstallFlags = [ "-p" "wdotool" "--no-default-features" ];
+        doCheck = false;
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.libxkbcommon pkgs.wayland ];
+        postInstall = ''
+          install -Dm444 LICENSE-MIT "$out/share/licenses/wdotool/LICENSE-MIT"
+          install -Dm444 LICENSE-APACHE "$out/share/licenses/wdotool/LICENSE-APACHE"
+        '';
+        meta.license = with pkgs.lib.licenses; [ mit asl20 ];
+      };
       captureTools = with pkgs; [
         coreutils
         ffmpeg-full
@@ -18,6 +43,7 @@
         grim
         wf-recorder
         wtype
+        waylandKeys
       ];
       # Compile a consumer's ordinary Rust main against this pinned library.
       mkRecorder =
@@ -73,7 +99,7 @@
       waylandCheck = mkRecorder {
         name = "kinestra-wayland-check";
         recipe = ./tests/wayland.rs;
-        runtimeInputs = [ pkgs.foot ];
+        runtimeInputs = [ pkgs.foot pkgs.bash ];
       };
     in
     {
