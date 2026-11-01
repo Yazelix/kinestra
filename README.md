@@ -116,10 +116,11 @@ nix run . -- --help
 ```
 
 The Nix checks run installed recipes on private Xvfb and headless Sway displays.
-The X11 check covers capture, exports, failures, signals, cleanup, and display
-isolation. The Wayland check launches a terminal by app ID, verifies typed text
-and Return reach it, checks video dimensions, and checks the snapshot and poster
-are nonempty. Neither check uses your desktop.
+The X11 check covers capture, exports, failures, signals, cleanup, display
+isolation, and a display that survives its last client disconnecting. The
+Wayland check launches a terminal by app ID, verifies typed text and Return
+reach it, checks video dimensions, and checks the snapshot and poster are
+nonempty. Neither check uses your desktop.
 
 ## Origin
 

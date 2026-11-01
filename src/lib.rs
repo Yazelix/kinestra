@@ -380,6 +380,9 @@ impl Recorder {
                     &format!("{size}x24"),
                     "-nolisten",
                     "tcp",
+                    // Without this, Xvfb resets when its last client exits and refuses
+                    // clients that connect during the reset, such as a window being launched.
+                    "-noreset",
                     "+extension",
                     "Composite",
                 ])

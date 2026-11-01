@@ -65,6 +65,21 @@ fn recipe(r: &mut Recorder) -> Result<()> {
         });
     }
 
+    // The display outlives its clients: Xvfb must not reset after the last one disconnects.
+    r.exec(r.command("xprop").args([
+        "-root",
+        "-f",
+        "KINESTRA_KEPT",
+        "8s",
+        "-set",
+        "KINESTRA_KEPT",
+        "kept",
+    ]))?;
+    assert!(
+        r.output(r.command("xprop").args(["-root", "KINESTRA_KEPT"]))?
+            .contains("\"kept\"")
+    );
+
     let work = r.work().to_path_buf();
     for name in ["first", "second"] {
         r.record(&work.join(format!("{name}.mp4")), |r| {

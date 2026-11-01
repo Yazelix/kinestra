@@ -95,6 +95,7 @@
       captureCheck = mkRecorder {
         name = "kinestra-capture-check";
         recipe = ./tests/capture.rs;
+        runtimeInputs = [ pkgs.xprop ];
       };
       waylandCheck = mkRecorder {
         name = "kinestra-wayland-check";
